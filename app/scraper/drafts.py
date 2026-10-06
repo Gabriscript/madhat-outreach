@@ -126,8 +126,10 @@ def import_gmail(service, db):
                     userId="me", id=item["id"], format="metadata", metadataHeaders=["To", "Subject"]
                 ).execute(num_retries=RETRIES)
                 headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
-                kind = next((k for prefix, k in prefixes.items() if headers.get("subject", "").startswith(prefix)),
-                            "altro")
+                subject = headers.get("subject", "").strip()
+                # the old website outreach went out without a subject too
+                kind = next((k for prefix, k in prefixes.items() if subject.startswith(prefix)),
+                            "altro" if subject else "sito")
                 at = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(message["internalDate"]) / 1000))
                 for email in EMAIL_RE.findall(headers.get("to", "")):  # every recipient counts
                     leads.record(db, email.lower(), kind, at, item["threadId"])
