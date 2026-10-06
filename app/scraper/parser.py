@@ -238,7 +238,8 @@ class Parser(Base):
         # ValueError: malformed URLs (typo'd Maps website, broken hrefs). Never let it escape:
         # parse() would drop the whole business row, not just the email
         except (requests.RequestException, ValueError) as e:
-            Communicator.show_message(f"Email non cercate su {url}: {e}")
+            reason = "risponde troppo lentamente" if "timed out" in str(e) else "non raggiungibile"
+            Communicator.show_message(f"Email non cercate su {url}: sito {reason}")
         return ", ".join(email for email in emails if domain_accepts_mail(email.rsplit("@", 1)[1])), booking, old
 
     def main(self, allResultsLinks):
