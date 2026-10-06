@@ -29,6 +29,8 @@ SCOPES = [
 # (2, 4, 8... seconds, randomized) and retries, up to this many times
 RETRIES = 8
 SCAN_LIMIT = 3000  # first-use import: newest drafts and sent mails checked, ~40 outreach mails a day fit easily
+# Subjects of the outreach sent before this app, found in Sent: they count as that campaign when importing
+OLD_SUBJECTS = {"Un restyling per il sito": "sito", "Il vostro sito": "sito", "Proposta sito web": "sito"}
 INBOX_SCAN = 2000  # newest inbox messages checked for replies at every run (list only, cheap)
 
 TEMPLATES = {
@@ -40,7 +42,7 @@ quanti appuntamenti saltano ogni mese perché il cliente si è semplicemente dim
 
 Sono Gabriele di MadHat Works. La mattina dell'appuntamento il vostro cliente riceve su WhatsApp un messaggio automatico con tre pulsanti: Confermo, Cancello, Arrivo tardi. Se disdice o avvisa che è in ritardo, vi arriva subito una mail e potete usare meglio quel tempo. Voi non dovete fare nulla.
 
-Costa 39€/mese + IVA. Per chi firma entro il 31 dicembre, i primi due mesi sono a 29€.
+Costa 39€/mese + IVA, e i primi due mesi sono a 29€.
 Se preferite l'email a WhatsApp: 19€/mese + IVA, primi due mesi a 9,90€.
 
 Rispondete "esempio" e vi mando il messaggio esatto che riceverebbero i vostri clienti, con il nome della vostra attività.
@@ -108,7 +110,7 @@ def import_gmail(service, db):
     """Once, on first use: everyone already emailed from this Gmail (drafts and sent mail) goes in the archive,
     with date and thread. Our two subjects count as that campaign; any other mail as "altro", which is never
     cold-pitched: clients, friends and older outreach with other subjects. Only To and Subject are read."""
-    prefixes = {subject.split("{name}")[0]: kind for kind, (subject, _) in TEMPLATES.items()}
+    prefixes = {subject.split("{name}")[0]: kind for kind, (subject, _) in TEMPLATES.items()} | OLD_SUBJECTS
     messages = service.users().messages()
     checked = 0
     # ponytail: one request per message (~10/s), a big Sent folder takes a few minutes, once;
