@@ -31,7 +31,8 @@ RETRIES = 8
 SCAN_LIMIT = 3000  # first-use import: newest drafts and sent mails checked, ~40 outreach mails a day fit easily
 # Subjects of the outreach sent before this app, found in Sent: they count as that campaign when importing
 OLD_SUBJECTS = {"Un restyling per il sito": "sito", "Il vostro sito": "sito", "Proposta sito web": "sito"}
-INBOX_SCAN = 2000  # newest inbox messages checked for replies at every run (list only, cheap)
+INBOX_SCAN = 2000
+INTERACTIVE = True  # False in the scheduled runs (automatico.py): no browser login possible  # newest inbox messages checked for replies at every run (list only, cheap)
 
 TEMPLATES = {
     "promemoria": (
@@ -100,6 +101,8 @@ def gmail_service():
         except RefreshError:  # while the Google Cloud app is in "Testing", Google revokes the login after 7 days
             creds = None
     if not creds or not creds.valid:
+        if not INTERACTIVE:  # nobody at the PC to log in: fail instead of waiting forever on the browser
+            raise RuntimeError("login Gmail scaduto: apri l'app e premi «Prepara le bozze di oggi» per rifarlo")
         creds = InstalledAppFlow.from_client_secrets_file(GMAIL_CLIENT_SECRET, SCOPES).run_local_server(port=0)
     with open(GMAIL_TOKEN, "w") as token:
         token.write(creds.to_json())

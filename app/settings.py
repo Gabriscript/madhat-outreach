@@ -24,3 +24,4 @@ STOCK_DAYS = 10  # search only when fewer days of leads than this are ready; rai
 SECOND_PITCH_DAYS = 120  # the other campaign only this long after the first email, never after a reply
 CARD_PAUSE = (2, 6)  # random seconds between two business cards
 SEARCH_PAUSE = (60, 180)  # random seconds between two searches
+SEND_PAUSE = (60, 120)  # random seconds between two emails sent by the scheduled run

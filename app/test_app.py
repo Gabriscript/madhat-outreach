@@ -146,7 +146,7 @@ class FakeGmail:
 
     def __init__(self, existing):
         self.existing = existing  # {label: [{"to", "subject", "at", "thread"}]} already in Gmail
-        self.created = []
+        self.created, self.sent = [], []
         self.listed = Counter()
 
     def users(self):
@@ -163,7 +163,14 @@ class FakeGmail:
         thread = f"new-{len(self.created)}"
         return SimpleNamespace(execute=lambda **retry: {"message": {"threadId": thread}})
 
-    def list(self, userId, labelIds, maxResults):
+    def send(self, userId, body):
+        self.sent.append(body["id"])
+        return SimpleNamespace(execute=lambda **retry: {})
+
+    def list(self, userId, maxResults, labelIds=None):
+        if labelIds is None:  # drafts().list
+            drafts = [{"id": d["id"], "message": {"threadId": d["thread"]}} for d in self.existing.get("DRAFTS", [])]
+            return SimpleNamespace(execute=lambda **retry: {"drafts": drafts})
         label = labelIds[0]
         self.listed[label] += 1
         items = [{"id": f"{label}:{i}", "threadId": m["thread"]} for i, m in enumerate(self.existing.get(label, []))]
@@ -222,6 +229,24 @@ def test_drafts_never_duplicated():
         }
 
 
+def test_send_only_our_drafts_from_before_today():
+    import automatico
+    with tempfile.TemporaryDirectory() as folder:
+        leads.DB_PATH, automatico.OUTPUT_PATH = os.path.join(folder, "test.db"), folder + os.sep
+        db = leads.connect()
+        leads.set_meta(db, "gmail_importato", days_ago(10))
+        leads.record(db, "a@x.it", "promemoria", days_ago(20), "vecchia")  # creaBozze draft, found by the import
+        leads.record(db, "b@x.it", "promemoria", days_ago(1), "ieri")  # prepared yesterday: goes out
+        leads.record(db, "c@x.it", "sito", days_ago(2), "cancellata")  # prepared, then deleted in Gmail
+        leads.record(db, "d@x.it", "sito", leads.now(), "oggi")  # prepared today: tomorrow
+        db.close()
+        gmail = FakeGmail(existing={"DRAFTS": [
+            {"id": f"draft-{thread}", "thread": thread} for thread in ("oggi", "ieri", "vecchia", "personale")]})
+        automatico.gmail_service = lambda: gmail
+        automatico.send()
+        assert gmail.sent == ["draft-ieri"]
+
+
 if __name__ == "__main__":
     test_extract_emails()
     test_site_signals()
@@ -232,4 +257,5 @@ if __name__ == "__main__":
     test_queue()
     test_pick_rules()
     test_drafts_never_duplicated()
+    test_send_only_our_drafts_from_before_today()
     print("OK")
