@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 from scraper import drafts, leads
 from scraper.communicator import Communicator
-from scraper.drafts import RETRIES, gmail_service
+from scraper.drafts import RETRIES, gmail_service, scan_replies, waiting_drafts
 from scraper.routine import run_routine
 from settings import DAILY_DRAFTS, OUTPUT_PATH, SEND_PAUSE
 
@@ -23,24 +23,16 @@ def log(message):
 
 
 def send():
-    """Drafts this app made before today and still in Gmail (deleted = not sent, edited = sent as edited),
-    oldest first, at most DAILY_DRAFTS, spaced out. Personal drafts and older ones are never touched."""
+    """Pitch drafts prepared before today and still in Gmail (deleted = not sent, edited = sent as edited),
+    oldest first, at most DAILY_DRAFTS, spaced out. Personal drafts and replies are never touched."""
+    service = gmail_service()
     db = leads.connect()
     try:
-        imported_at = leads.get_meta(db, "gmail_importato") or ""
-        ours = {thread for (thread,) in db.execute(
-            "SELECT thread FROM events WHERE kind IN ('promemoria', 'sito') AND thread IS NOT NULL AND at > ? AND at < ?",
-            (imported_at, leads.today()))}
+        scan_replies(service, db)  # a reply that came in overnight keeps its thread out
+        ready = [draft_id for draft_id, at in waiting_drafts(service, db) if at < leads.today()][:DAILY_DRAFTS]
     finally:
         db.close()
-    api = gmail_service().users().drafts()
-    ready = []
-    request = api.list(userId="me", maxResults=500)
-    while request is not None:
-        response = request.execute(num_retries=RETRIES)
-        ready += [d["id"] for d in response.get("drafts", []) if d["message"]["threadId"] in ours]
-        request = api.list_next(request, response)
-    ready = ready[::-1][:DAILY_DRAFTS]  # Gmail lists newest first
+    api = service.users().drafts()
     log(f"Invio {len(ready)} bozze preparate nei giorni scorsi")
     for i, draft_id in enumerate(ready):
         if i:

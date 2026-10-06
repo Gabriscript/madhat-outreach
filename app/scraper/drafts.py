@@ -184,12 +184,32 @@ def draft(service, db, email, name, kind):
     leads.record(db, email, kind, thread=created["message"]["threadId"])
 
 
+def waiting_drafts(service, db):
+    """[(draft id, prepared at)] of the pitches still waiting in Gmail, oldest first: this app's and the older
+    ones found by the import. A thread with a reply is left out: a draft there is your answer, not a pitch."""
+    ours = dict(db.execute("""
+        SELECT thread, min(at) FROM events WHERE kind IN ('promemoria', 'sito') AND thread IS NOT NULL
+        AND thread NOT IN (SELECT thread FROM events WHERE kind = 'risposta' AND thread IS NOT NULL)
+        GROUP BY thread"""))
+    api = service.users().drafts()
+    found = []
+    request = api.list(userId="me", maxResults=500)
+    while request is not None:
+        response = request.execute(num_retries=RETRIES)
+        found += [(d["id"], ours[d["message"]["threadId"]]) for d in response.get("drafts", [])
+                  if d["message"]["threadId"] in ours]
+        request = api.list_next(request, response)
+    return sorted(found, key=lambda draft: draft[1])
+
+
 def draft_today(service, db):
-    """Today's drafts from the archive, up to DAILY_DRAFTS a day whatever the number of runs"""
+    """Keeps one day of drafts (DAILY_DRAFTS) waiting to be sent: none while older ones are still queued"""
     prepare(service, db)
-    todo = leads.pick(db, max(DAILY_DRAFTS - leads.drafted_today(db), 0))
+    waiting = len(waiting_drafts(service, db))
+    todo = leads.pick(db, max(DAILY_DRAFTS - waiting, 0))
     if not todo:
-        Communicator.show_message("Nessuna bozza da preparare oggi")
+        Communicator.show_message(f"{waiting} bozze già in attesa di invio: oggi non ne preparo altre"
+                                  if waiting else "Nessuna bozza da preparare oggi")
         return
     Communicator.show_message(f"Preparo {len(todo)} bozze in Gmail...")
     created = 0
