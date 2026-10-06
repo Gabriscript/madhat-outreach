@@ -2,6 +2,7 @@ import threading
 
 class Common:
     closeThread = threading.Event()
+    blocked = threading.Event()  # Google answered with its captcha page: no more searches today
     lock = threading.Lock()
 
     @classmethod

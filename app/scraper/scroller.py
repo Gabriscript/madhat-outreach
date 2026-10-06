@@ -9,14 +9,15 @@ class Scroller:
 
     def __init__(self, driver) -> None:
         self.driver = driver
-    
-    def __init_parser(self):
-        self.parser = Parser(self.driver)
+        self.parser = Parser(driver)  # created up front: the routine reads its results even when nothing was found
 
+    @property
+    def finished(self):
+        """True only when every business in the list was read. No list counts as unfinished too:
+        if Google changes the page, searches get retried instead of silently marked done."""
+        return self.parser.finished
 
     def start_parsing(self):
-        self.__init_parser() # init parser object on fly
-
         self.parser.main(self.__allResultsLinks)
         
 

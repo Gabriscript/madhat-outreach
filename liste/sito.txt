@@ -1,0 +1,32 @@
+# Categorie per la campagna Sito web (attività dove un buon sito conta), in ordine di priorità.
+# La routine le cerca dopo aver finito quelle del Promemoria. Una per riga; # = riga ignorata.
+ristorante
+pizzeria
+hotel
+bed and breakfast
+agriturismo
+pasticceria
+gelateria
+bar
+enoteca
+fioraio
+ottico
+gioielleria
+negozio di abbigliamento
+ferramenta
+idraulico
+elettricista
+impresa edile
+imbianchino
+falegnameria
+agenzia immobiliare
+studio di architettura
+commercialista
+avvocato
+palestra
+scuola di danza
+negozio di animali
+macelleria
+panificio
+lavanderia
+agenzia viaggi

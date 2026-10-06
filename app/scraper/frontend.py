@@ -7,11 +7,13 @@ import time
 import tkinter as tk
 from tkinter import filedialog, ttk
 
+from scraper import leads
 from scraper.common import Common
 from scraper.communicator import Communicator
 from scraper.drafts import create_drafts
+from scraper.routine import run_routine
 from scraper.scraper import Backend
-from settings import OUTPUT_PATH
+from settings import DAILY_DRAFTS, OUTPUT_PATH, SEARCHES_PER_DAY
 
 # Teal palette from the design system, primary darkened to #0F766E so white text keeps 5.4:1 contrast
 BG = "#F0FDFA"
@@ -31,9 +33,10 @@ class Frontend:
         self.root.iconphoto(True, tk.PhotoImage(file="app/images/GMS.png"))
         self.root.title("MadHat Outreach")
         self.root.configure(bg=BG)
-        self.root.geometry("720x860")
-        self.root.minsize(640, 760)
+        self.root.geometry("720x960")
+        self.root.minsize(640, 860)
         self.init_styles()
+        self.routine_running = False
 
         page = ttk.Frame(self.root, padding=24)
         page.pack(fill="both", expand=True)
@@ -44,17 +47,44 @@ class Frontend:
             text="Trova attività su Google Maps, estrai le loro email e prepara le bozze Gmail.",
         ).pack(anchor="w", pady=(2, 16))
 
-        """Step 1: scraping"""
-        search = self.card(page, "1   Cerca su Google Maps")
-        ttk.Label(search, text="Cosa cerchi", style="Card.TLabel").pack(anchor="w")
+        """Activity bar: shown only while something runs"""
+        self.activity = ttk.Frame(page)
+        self.stop_button = ttk.Button(
+            self.activity, text="Ferma", style="Secondary.TButton", cursor="hand2", command=self.stopscraping)
+        self.stop_button.pack(side="left")
+        self.progress_label = ttk.Label(self.activity)
+        self.progress_label.pack(side="right", padx=(8, 0))
+        self.progress = ttk.Progressbar(self.activity, mode="indeterminate", style="Teal.Horizontal.TProgressbar")
+        self.progress.pack(side="left", fill="x", expand=True, padx=(16, 0))
+
+        """Step 1: daily routine, the everyday button"""
+        routine = self.card(page, "1   Routine di oggi")
+        self.routine_card = routine.master
+        ttk.Label(
+            routine, style="CardMuted.TLabel", wraplength=600, justify="left",
+            text=f"Prepara fino a {DAILY_DRAFTS} bozze con i contatti dell'archivio, poi, se ne restano pochi, "
+                 f"cerca nuove attività dalla coda: massimo {SEARCHES_PER_DAY} ricerche al giorno, con Chrome nascosto.",
+        ).pack(anchor="w")
+        self.status = ttk.Label(routine, style="Card.TLabel")
+        self.status.pack(anchor="w", pady=(8, 0))
+        self.routine_button = ttk.Button(
+            routine, text="Prepara le bozze di oggi", style="Primary.TButton", cursor="hand2",
+            command=self.startroutine)
+        self.routine_button.pack(anchor="w", pady=(12, 0))
+
+        """Step 2: one search by hand"""
+        search = self.card(page, "2   Ricerca singola su Google Maps")
         self.search_box = ttk.Entry(search, font=(FONT, 12))
-        self.search_box.pack(fill="x", pady=(4, 2), ipady=4)
+        self.search_box.pack(fill="x", pady=(0, 2), ipady=4)
         self.search_box.bind("<Return>", lambda _: self.getinput())
         self.search_error = ttk.Label(search, style="CardMuted.TLabel", text='Categoria e città, es. "dentisti roma"')
         self.search_error.pack(anchor="w")
 
         options = ttk.Frame(search, style="Card.TFrame")
         options.pack(fill="x", pady=(12, 0))
+        self.submit_button = ttk.Button(
+            options, text="Avvia ricerca", style="Secondary.TButton", cursor="hand2", command=self.getinput)
+        self.submit_button.pack(side="left", padx=(0, 24))
         ttk.Label(options, text="Formato file", style="Card.TLabel").pack(side="left")
         self.outputFormatButton = ttk.Combobox(options, values=["Excel", "CSV", "JSON"], state="readonly", width=8)
         self.outputFormatButton.current(0)
@@ -64,28 +94,10 @@ class Frontend:
             options, text="Browser nascosto", variable=self.healdessCheckBoxVar, style="Card.TCheckbutton",
         ).pack(side="left")
 
-        actions = ttk.Frame(search, style="Card.TFrame")
-        actions.pack(fill="x", pady=(16, 0))
-        self.submit_button = ttk.Button(
-            actions, text="Avvia ricerca", style="Primary.TButton", cursor="hand2", command=self.getinput)
-        self.submit_button.pack(side="left")
-        self.stop_button = ttk.Button(
-            actions, text="Ferma", style="Secondary.TButton", cursor="hand2", command=self.stopscraping,
-            state="disabled")
-        self.stop_button.pack(side="left", padx=8)
-        self.progress_label = ttk.Label(actions, style="Card.TLabel")
-        self.progress_label.pack(side="right", padx=(8, 0))
-        self.progress = ttk.Progressbar(actions, mode="indeterminate", style="Teal.Horizontal.TProgressbar")
-
-        """Step 2: Gmail drafts, each button asks for a scraped file"""
-        drafts = self.card(page, "2   Prepara le bozze Gmail")
-        ttk.Label(
-            drafts, style="CardMuted.TLabel", wraplength=560, justify="left",
-            text="Scegli un file di risultati: verrà salvata una bozza per ogni attività con email. "
-                 "Nulla viene inviato, controlli tu le bozze in Gmail.",
-        ).pack(anchor="w")
+        """Step 3: Gmail drafts from a results file"""
+        drafts = self.card(page, "3   Bozze da un file")
         buttons = ttk.Frame(drafts, style="Card.TFrame")
-        buttons.pack(fill="x", pady=(12, 0))
+        buttons.pack(fill="x")
         self.draft_buttons = []
         for text, kind in (("Bozze Promemoria", "promemoria"), ("Bozze Sito web", "sito")):
             button = ttk.Button(
@@ -94,13 +106,16 @@ class Frontend:
             )
             button.pack(side="left", padx=(0, 8))
             self.draft_buttons.append(button)
+        ttk.Label(
+            buttons, style="CardMuted.TLabel", text="Salta chi è già stato contattato",
+        ).pack(side="left", padx=(8, 0))
 
         """Activity log"""
-        ttk.Label(page, text="Attività", style="Heading.TLabel").pack(anchor="w", pady=(8, 4))
+        ttk.Label(page, text="Attività", style="Heading.TLabel").pack(anchor="w", pady=(0, 4))
         log = tk.Frame(page, bg=CARD, highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
         log.pack(fill="both", expand=True)
         self.show_text = tk.Text(
-            log, font=(FONT, 10), height=8, wrap="word", state="disabled", relief="flat",
+            log, font=(FONT, 10), height=6, wrap="word", state="disabled", relief="flat",
             bg=CARD, fg=TEXT, padx=12, pady=8,
         )
         scrollbar = ttk.Scrollbar(log, command=self.show_text.yview)
@@ -108,8 +123,9 @@ class Frontend:
         scrollbar.pack(side="right", fill="y")
         self.show_text.pack(side="left", fill="both", expand=True)
 
-        self.__replacingtext("Pronto. Scrivi cosa cercare e premi Avvia ricerca.")
-        self.search_box.focus_set()
+        self.refreshstatus()
+        self.__replacingtext("Pronto. Premi «Prepara le bozze di oggi», oppure fai una ricerca singola.")
+        self.routine_button.focus_set()
         self.init_communicator()
 
     def init_styles(self):
@@ -153,7 +169,7 @@ class Frontend:
             foreground=[("disabled", BORDER)],
             bordercolor=[("disabled", BORDER)],
         )
-        style.configure("Teal.Horizontal.TProgressbar", background=PRIMARY, troughcolor=BG, bordercolor=BORDER)
+        style.configure("Teal.Horizontal.TProgressbar", background=PRIMARY, troughcolor=CARD, bordercolor=BORDER)
 
     def card(self, parent, title):
         """White bordered section, returns the inner frame to fill"""
@@ -161,7 +177,7 @@ class Frontend:
         outer.pack(fill="x", pady=(0, 16))
         inner = ttk.Frame(outer, style="Card.TFrame", padding=16)
         inner.pack(fill="x")
-        ttk.Label(inner, text=title, style="CardHeading.TLabel").pack(anchor="w", pady=(0, 12))
+        ttk.Label(inner, text=title, style="CardHeading.TLabel").pack(anchor="w", pady=(0, 10))
         return inner
 
     def init_communicator(self):
@@ -175,9 +191,51 @@ class Frontend:
         self.show_text.see(tk.END)
         self.show_text.config(state="disabled")
 
+    def refreshstatus(self):
+        db = leads.connect()
+        try:
+            self.status.config(text=leads.status(db))
+        except Exception as e:  # e.g. a list deleted from liste/
+            self.status.config(text=f"Archivio non leggibile: {e}")
+        finally:
+            db.close()
+
+    def busy(self, on):
+        """One job at a time: every action greyed out while something runs, the activity bar shows it"""
+        for button in (self.routine_button, self.submit_button, *self.draft_buttons):
+            button.config(state="disabled" if on else "normal")
+        if on:
+            Common.closeThread.clear()  # a previous Ferma must not end this job right away
+            Common.blocked.clear()
+            self.stop_button.config(state="normal")
+            self.progress.config(mode="indeterminate", value=0)
+            self.activity.pack(fill="x", pady=(0, 16), before=self.routine_card)
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+            self.activity.pack_forget()
+            self.progress_label.config(text="")
+            self.refreshstatus()
+
+    def startroutine(self):
+        self.outputFormatValue = self.outputFormatButton.get().lower()  # format of each search's own file
+        self.routine_running = True
+        self.busy(True)
+
+        def run():
+            try:
+                run_routine()
+            finally:
+                self.routine_running = False
+                self.busy(False)
+
+        # not a daemon: on window close it must live long enough to quit Chrome
+        self.threadToStartBackend = threading.Thread(target=run)
+        self.threadToStartBackend.start()
+
     def getinput(self):
         if str(self.submit_button["state"]) == "disabled":
-            return  # Enter pressed while a search is already running
+            return  # Enter pressed while a job is already running
         self.searchQuery = self.search_box.get().strip()
         if not self.searchQuery:
             self.search_error.config(text="Scrivi cosa cercare, es. \"dentisti roma\"", style="CardError.TLabel")
@@ -188,12 +246,7 @@ class Frontend:
         self.searchQuery = self.searchQuery.lower()
         self.outputFormatValue = self.outputFormatButton.get().lower()
         self.headlessMode = self.healdessCheckBoxVar.get()
-
-        Common.closeThread.clear()  # a previous Stop must not end this search right away
-        self.submit_button.config(state="disabled")
-        self.stop_button.config(state="normal")
-        self.progress.pack(side="left", fill="x", expand=True, padx=(16, 0))
-        self.progress.start(12)
+        self.busy(True)
 
         # not a daemon: on window close it must live long enough to quit Chrome
         self.threadToStartBackend = threading.Thread(target=self.startscraping)
@@ -202,7 +255,7 @@ class Frontend:
     def stopscraping(self):
         Common.set_close_thread()
         self.stop_button.config(state="disabled")
-        self.__replacingtext("Interrompo la ricerca, salvo quello che ho già raccolto...")
+        self.__replacingtext("Interrompo, salvo quello che ho già raccolto...")
 
     def closingbrowser(self):
         """It will close the browser when the app is closed"""
@@ -225,33 +278,32 @@ class Frontend:
             initialdir=OUTPUT_PATH, filetypes=[("Risultati della ricerca", "*.xlsx *.csv *.json")])
         if not path:
             return
-        for button in self.draft_buttons:  # no second run until this one is finished
-            button.config(state="disabled")
+        self.busy(True)
 
         def run():
             try:
                 create_drafts(kind, path)
             finally:
-                for button in self.draft_buttons:
-                    button.config(state="normal")
+                self.busy(False)
 
         threading.Thread(target=run, daemon=True).start()
 
     def progressshowing(self, done, total):
         """Scrolling phase: bar bounces. Reading phase: bar fills, one step per business"""
-        if str(self.progress["mode"]) != "determinate":
+        if done == 1:  # a new search starts reading
             self.progress.stop()
             self.progress.config(mode="determinate", maximum=total)
         self.progress["value"] = done
         self.progress_label.config(text=f"Scheda {done} di {total}")
 
     def end_processing(self):
-        self.progress.stop()
+        """Called by the backend after every search; during the routine more searches may follow"""
         self.progress.config(mode="indeterminate", value=0)
-        self.progress.pack_forget()
+        self.progress.start(12)
         self.progress_label.config(text="")
-        self.submit_button.config(state="normal")
-        self.stop_button.config(state="disabled")
+        if not self.routine_running:
+            self.busy(False)
+            self.__replacingtext("Puoi avviare una nuova ricerca")
 
     def messageshowing(self, message):
         self.__replacingtext(message)

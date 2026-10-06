@@ -30,6 +30,10 @@ class Base:
             else:
                 break
 
+        if "/sorry/" in self.driver.current_url:  # Google's "unusual traffic" captcha: never solve it, stop
+            Common.blocked.set()
+            raise RuntimeError("Google ha mostrato un captcha, ricerche sospese fino a domani")
+
     def rejectcookies(self):
         """Clean browser profile => Google redirects to consent.google.com every session. Click "Reject all"."""
 

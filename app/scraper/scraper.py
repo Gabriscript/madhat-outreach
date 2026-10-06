@@ -72,6 +72,7 @@ class Backend(Base):
 
 
     def mainscraping(self):
+        """Runs the whole search; True when every business in the result list was read"""
 
         try:
             querywithplus = "+".join(self.searchquery.split())
@@ -111,7 +112,8 @@ class Backend(Base):
                 pass
 
             Communicator.end_processing()
-            Communicator.show_message("Puoi avviare una nuova ricerca")
+
+        return self.scroller.finished
 
 
 

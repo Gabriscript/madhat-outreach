@@ -11,6 +11,16 @@ DRIVER_EXECUTABLE_PATH = None
 # Gmail drafts, relative to the folder you launch the app from (the repo root). Both are secrets: gitignored
 GMAIL_CLIENT_SECRET = "client_secret.json"  # OAuth client downloaded from Google Cloud Console
 GMAIL_TOKEN = "token.json"  # written after the first login, delete it to log in again
-# Every draft created, so the same business never gets the same draft twice. Delete a row to draft
-# that email again. If the file is missing it's rebuilt from the drafts and sent mail in Gmail
-DRAFTS_LOG = OUTPUT_PATH + "bozze_create.csv"
+
+# Archive of searches, businesses and every email drafted or sent (personal data: output/ is gitignored).
+# If it's deleted, the first run rebuilds the email history from the drafts and sent mail in Gmail
+DB_PATH = OUTPUT_PATH + "outreach.db"
+LISTS_PATH = "liste/"  # cities and categories the routine searches, one per line, edit them freely
+
+# Daily routine
+DAILY_DRAFTS = 40  # drafts prepared per day
+SEARCHES_PER_DAY = 4  # Google Maps searches per day at most: few and spaced out, like a person
+STOCK_DAYS = 10  # search only when fewer days of leads than this are ready; raise it to collect ahead
+SECOND_PITCH_DAYS = 120  # the other campaign only this long after the first email, never after a reply
+CARD_PAUSE = (2, 6)  # random seconds between two business cards
+SEARCH_PAUSE = (60, 180)  # random seconds between two searches

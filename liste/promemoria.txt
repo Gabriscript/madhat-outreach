@@ -1,0 +1,24 @@
+# Categorie per la campagna Promemoria (attività che lavorano su appuntamento), in ordine di priorità.
+# Una per riga, come la scriveresti su Google Maps; le righe che iniziano con # vengono ignorate.
+dentista
+parrucchiere
+centro estetico
+barbiere
+fisioterapista
+studio medico
+osteopata
+psicologo
+nutrizionista
+veterinario
+centro massaggi
+onicotecnica
+tatuatore
+podologo
+logopedista
+dermatologo
+oculista
+ginecologo
+personal trainer
+toelettatura cani
+scuola guida
+autofficina

@@ -9,16 +9,33 @@ from functools import lru_cache
 from urllib.parse import urldefrag, urljoin, urlparse
 import dns.exception
 import dns.resolver
+import random
 import requests
 import re
+import time
+from settings import CARD_PAUSE
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 }
 EMAIL_RE = re.compile(r"[a-zA-Z0-9._+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
-# ponytail: naive blocklist for asset names, placeholders and JS error-tracker DSNs, extend when new junk shows up
+# ponytail: naive blocklist for asset names, placeholders, JS error-tracker DSNs and PEC certified mailboxes
+# (no place for marketing), extend when new junk shows up
 JUNK_EMAIL_RE = re.compile(
-    r"\.(png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|pdf)$|@(example|domain|dominio|email)\.|sentry|wixpress", re.I)
+    r"\.(png|jpe?g|gif|webp|svg|ico|css|js|woff2?|ttf|pdf)$|@(example|domain|dominio|email)\.|sentry|wixpress"
+    r"|@(.+\.)?(pec|legalmail|postecert|postacert|arubapec|registerpec|sicurezzapostale|pecimprese)\.", re.I)
+# Online booking already sends its own reminders: those businesses get the website pitch instead
+BOOKING_RE = re.compile(
+    r"miodottore|treatwell|fresha|booksy|uala\.|doctolib|appuntamentionline|prenotazionionline|calendly", re.I)
+
+
+def site_signals(page_html, url):
+    """(has online booking, how outdated the site looks 0-3) from the homepage already downloaded:
+    plain http, no mobile viewport, newest copyright year 3+ years old."""
+    notice = " ".join(re.findall(r"(?:©|&copy;|&#169;|copyright)([^<]{0,30})", page_html, re.I))
+    years = [int(year) for year in re.findall(r"(?:19|20)\d\d", notice)]
+    old_year = bool(years) and max(years) <= time.localtime().tm_year - 3
+    return bool(BOOKING_RE.search(page_html)), (url.startswith("http:")) + ("viewport" not in page_html) + old_year
 
 
 def extract_emails(page_html):
@@ -69,6 +86,7 @@ class Parser(Base):
     def __init__(self, driver) -> None:
         self.driver = driver
         self.finalData = []
+        self.finished = False
 
     def init_data_saver(self):
         self.data_saver = DataSaver()
@@ -136,14 +154,15 @@ class Parser(Base):
             websiteTag = soup.select_one('a[data-item-id="authority"]')
             websiteUrl = websiteTag.get("href") if websiteTag else None
 
-            # Extract Email
+            # Extract Email, plus what the homepage says about online booking and how dated the site is
+            booking, siteOld = False, None
             if websiteUrl:
-                email = self.find_mail(websiteUrl)
+                email, booking, siteOld = self.find_mail(websiteUrl)
 
-            # Extract booking link
+            # Extract booking link (English or Italian Maps UI)
             try:
                 bookingTag = soup.find(
-                    "a", {"aria-label": lambda x: x and "Open booking link" in x}
+                    "a", {"aria-label": lambda x: x and ("booking link" in x or "prenotazion" in x)}
                 )
                 if bookingTag:
                     bookingLink = bookingTag.get("href")
@@ -191,6 +210,9 @@ class Parser(Base):
                 "Booking Links": bookingLink,
                 "Rating": rating,
                 "Hours": hours,
+                # Maps' booking link is often just the business's own contact page: only a real platform counts
+                "Prenotazione online": booking or bool(bookingLink and BOOKING_RE.search(bookingLink)),
+                "Sito datato": siteOld,
             }
 
             self.finalData.append(data)
@@ -199,13 +221,15 @@ class Parser(Base):
             Communicator.show_message(f"Errore leggendo una scheda di Maps: {e}")
 
     def find_mail(self, url):
-        """Emails from the business homepage, else from up to 3 of its contact pages."""
+        """(emails, has online booking, outdated-site score): emails from the business homepage,
+        else from up to 3 of its contact pages."""
         # ponytail: plain HTTP only, sites that render emails with JS are missed; add a headless
         # second driver if the hit rate is too low (never reuse self.driver, it must stay on Maps)
-        emails = []
+        emails, booking, old = [], False, None
         try:
             page, final_url = fetch_html(url)
             emails = extract_emails(page)
+            booking, old = site_signals(page, final_url)
             if not emails:
                 for link in contact_links(page, final_url)[:3]:
                     emails = extract_emails(fetch_html(link)[0])
@@ -215,7 +239,7 @@ class Parser(Base):
         # parse() would drop the whole business row, not just the email
         except (requests.RequestException, ValueError) as e:
             Communicator.show_message(f"Email non cercate su {url}: {e}")
-        return ", ".join(email for email in emails if domain_accepts_mail(email.rsplit("@", 1)[1]))
+        return ", ".join(email for email in emails if domain_accepts_mail(email.rsplit("@", 1)[1])), booking, old
 
     def main(self, allResultsLinks):
         Communicator.show_message(
@@ -229,7 +253,12 @@ class Parser(Base):
 
                 Communicator.show_progress(done, len(allResultsLinks))
                 self.openingurl(url=resultLink)
+                if Common.close_thread_is_set():
+                    return  # Ferma pressed while the page loaded: openingurl already quit the driver
                 self.parse()
+                Common.closeThread.wait(random.uniform(*CARD_PAUSE))  # human pace; Ferma cuts the pause short
+
+            self.finished = True  # every business read: the search can be marked as done
 
         except Exception as e:
             Communicator.show_message(

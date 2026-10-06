@@ -1,10 +1,9 @@
 """
 Gmail drafts for the scraped leads: one draft per business, nothing is sent automatically.
-Ported from creaBozze.py.
+Who was already contacted lives in the archive (leads.py). Ported from creaBozze.py.
 """
 
 import base64
-import csv
 import os
 import time
 from email.message import EmailMessage
@@ -17,9 +16,10 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
+from scraper import leads
 from scraper.communicator import Communicator
 from scraper.parser import EMAIL_RE
-from settings import DRAFTS_LOG, GMAIL_CLIENT_SECRET, GMAIL_TOKEN
+from settings import DAILY_DRAFTS, GMAIL_CLIENT_SECRET, GMAIL_TOKEN
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",  # create the drafts
@@ -29,6 +29,7 @@ SCOPES = [
 # (2, 4, 8... seconds, randomized) and retries, up to this many times
 RETRIES = 8
 SCAN_LIMIT = 3000  # first-use import: newest drafts and sent mails checked, ~40 outreach mails a day fit easily
+INBOX_SCAN = 2000  # newest inbox messages checked for replies at every run (list only, cheap)
 
 TEMPLATES = {
     "promemoria": (
@@ -103,21 +104,13 @@ def gmail_service():
     return build("gmail", "v1", credentials=creds)
 
 
-def drafted(kind):
-    """Emails that already got a draft of this kind, read from DRAFTS_LOG: clicking twice must not draft them again."""
-    try:
-        with open(DRAFTS_LOG, newline="", encoding="utf-8") as log:
-            return {row["email"] for row in csv.DictReader(log) if row["tipo"] == kind}
-    except FileNotFoundError:
-        return set()
-
-
-def gmail_history(service):
-    """{(kind, email)} already drafted or sent from this Gmail with one of TEMPLATES' subjects (e.g. via
-    creaBozze.py). Only To and Subject are read, any other mail is ignored."""
+def import_gmail(service, db):
+    """Once, on first use: everyone already emailed from this Gmail (drafts and sent mail) goes in the archive,
+    with date and thread. Our two subjects count as that campaign; any other mail as "altro", which is never
+    cold-pitched: clients, friends and older outreach with other subjects. Only To and Subject are read."""
     prefixes = {subject.split("{name}")[0]: kind for kind, (subject, _) in TEMPLATES.items()}
     messages = service.users().messages()
-    found, checked = set(), 0
+    checked = 0
     # ponytail: one request per message (~10/s), a big Sent folder takes a few minutes, once;
     # switch to batch requests if that wait becomes a problem
     for label in ("DRAFT", "SENT"):
@@ -131,67 +124,107 @@ def gmail_history(service):
                     userId="me", id=item["id"], format="metadata", metadataHeaders=["To", "Subject"]
                 ).execute(num_retries=RETRIES)
                 headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
-                kind = next((k for prefix, k in prefixes.items() if headers.get("subject", "").startswith(prefix)), None)
-                if kind:  # every recipient counts: creaBozze.py could put several in To
-                    found.update((kind, email.lower()) for email in EMAIL_RE.findall(headers.get("to", "")))
+                kind = next((k for prefix, k in prefixes.items() if headers.get("subject", "").startswith(prefix)),
+                            "altro")
+                at = time.strftime("%Y-%m-%d %H:%M", time.localtime(int(message["internalDate"]) / 1000))
+                for email in EMAIL_RE.findall(headers.get("to", "")):  # every recipient counts
+                    leads.record(db, email.lower(), kind, at, item["threadId"])
                 checked += 1
                 if checked % 200 == 0:
                     Communicator.show_message(f"Controllati {checked} messaggi in Gmail...")
             request = messages.list_next(request, response)
-    return found
+    leads.set_meta(db, "gmail_importato", leads.now())
+
+
+def scan_replies(service, db):
+    """An inbox message inside a thread we started is a reply or a bounce: that business gets nothing more
+    automatically. Matching threads needs no message bodies and only list calls."""
+    ours = dict(db.execute("SELECT thread, email FROM events WHERE thread IS NOT NULL AND kind IN ('promemoria', 'sito')"))
+    known = {email for (email,) in db.execute("SELECT email FROM events WHERE kind = 'risposta'")}
+    request = service.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=500)
+    seen = 0
+    while request is not None and seen < INBOX_SCAN:
+        response = request.execute(num_retries=RETRIES)
+        for item in response.get("messages", []):
+            email = ours.get(item["threadId"])
+            if email and email not in known:
+                leads.record(db, email, "risposta", thread=item["threadId"])
+                known.add(email)
+                Communicator.show_message(f"Nuova risposta da {email}: non riceverà altre email automatiche")
+        seen += len(response.get("messages", []))
+        request = service.users().messages().list_next(request, response)
+
+
+def prepare(service, db):
+    """Before any draft: history from Gmail on first use, then replies"""
+    if not leads.get_meta(db, "gmail_importato"):
+        Communicator.show_message("Primo utilizzo: controllo bozze e posta inviata in Gmail per non ricontattare "
+                                  "nessuno (una volta sola, può richiedere qualche minuto)...")
+        import_gmail(service, db)
+    scan_replies(service, db)
+
+
+def draft(service, db, email, name, kind):
+    """One Gmail draft, recorded in the archive at once with its thread (that's how replies are spotted)"""
+    subject, body = TEMPLATES[kind]
+    message = EmailMessage()
+    message.set_content(body)
+    message["To"] = email
+    message["Subject"] = subject.format(name=name or "Spettabile Attività")
+    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
+    created = service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute(
+        num_retries=RETRIES)
+    leads.record(db, email, kind, thread=created["message"]["threadId"])
+
+
+def draft_today(service, db):
+    """Today's drafts from the archive, up to DAILY_DRAFTS a day whatever the number of runs"""
+    prepare(service, db)
+    todo = leads.pick(db, max(DAILY_DRAFTS - leads.drafted_today(db), 0))
+    if not todo:
+        Communicator.show_message("Nessuna bozza da preparare oggi")
+        return
+    Communicator.show_message(f"Preparo {len(todo)} bozze in Gmail...")
+    created = 0
+    for email, name, kind in todo:
+        try:
+            draft(service, db, email, name, kind)
+            created += 1
+        except HttpError as e:
+            Communicator.show_message(f"Bozza non creata per {email}: {e}")
+    Communicator.show_message(f"Fatto: {created} bozze salvate in Gmail, controllale prima di inviarle")
 
 
 def create_drafts(kind, path):
-    """Runs in a worker thread: every outcome is reported through Communicator, nothing raises."""
+    """Drafts from a results file. Runs in a worker thread: every outcome goes through Communicator, nothing raises."""
+    db = leads.connect()
     try:
-        subject, body = TEMPLATES[kind]
-        leads = load_leads(path)
-        if not leads:
+        rows = load_leads(path)
+        if not rows:
             Communicator.show_message(f"Nessuna email trovata in {os.path.basename(path)}")
             return
-
-        os.makedirs(os.path.dirname(DRAFTS_LOG) or ".", exist_ok=True)
-        # opened before the first draft: if Excel locks the file we stop now, not after drafts we can't record
-        with open(DRAFTS_LOG, "a", newline="", encoding="utf-8") as log:
-            service = gmail_service()
-            if log.tell() == 0:  # new or empty log: mail drafted or sent before this app (creaBozze.py) counts as done
-                Communicator.show_message(
-                    "Primo utilizzo: controllo bozze e posta inviata in Gmail per non ricontattare nessuno "
-                    "(una volta sola, può richiedere qualche minuto)...")
-                imported = sorted(gmail_history(service))
-                log.write("tipo,email,data\n")
-                log.writelines(f"{k},{e},importata da Gmail\n" for k, e in imported)
-                log.flush()
-                Communicator.show_message(f"{len(imported)} contatti già fatti trovati in Gmail, verranno saltati")
-
-            done = drafted(kind)
-            todo = [(email, name) for email, name in leads if email not in done]
-            if not todo:
-                Communicator.show_message(
-                    f"Nessuna bozza da creare: le {len(leads)} email di questo file sono già state contattate ({kind})")
-                return
-            skipped = len(leads) - len(todo)
+        service = gmail_service()
+        prepare(service, db)
+        todo = [(email, name) for email, name in rows if leads.can_pitch(db, email, kind)]
+        if not todo:
             Communicator.show_message(
-                f"Creo {len(todo)} bozze in Gmail..." + (f" ({skipped} saltate, già contattate)" if skipped else ""))
-
-            created = 0
-            for email, name in todo:
-                message = EmailMessage()
-                message.set_content(body)
-                message["To"] = email
-                message["Subject"] = subject.format(name=name or "Spettabile Attività")
-                raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                try:
-                    service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute(
-                        num_retries=RETRIES)
-                except HttpError as e:
-                    Communicator.show_message(f"Bozza non creata per {email}: {e}")
-                    continue
-                log.write(f"{kind},{email},{time.strftime('%Y-%m-%d %H:%M')}\n")
-                log.flush()  # recorded right away: survives a crash or the window closed mid-run
+                f"Nessuna bozza da creare: le {len(rows)} email di questo file sono già state contattate ({kind})")
+            return
+        skipped = len(rows) - len(todo)
+        Communicator.show_message(
+            f"Creo {len(todo)} bozze in Gmail..." + (f" ({skipped} saltate, già contattate)" if skipped else ""))
+        created = 0
+        for email, name in todo:
+            # in the archive too, so the other campaign can follow after SECOND_PITCH_DAYS
+            db.execute("INSERT OR IGNORE INTO leads (email, domain, name, campaign, added_at) VALUES (?, ?, ?, ?, ?)",
+                       (email, leads.own_domain(email), name, kind, leads.now()))
+            try:
+                draft(service, db, email, name, kind)
                 created += 1
+            except HttpError as e:
+                Communicator.show_message(f"Bozza non creata per {email}: {e}")
         Communicator.show_message(f"Fatto: {created} bozze salvate in Gmail, controllale prima di inviarle")
-    except PermissionError:
-        Communicator.show_message(f"Chiudi {os.path.abspath(DRAFTS_LOG)} (è aperto in Excel?) e riprova")
     except Exception as e:  # bad file, login refused, revoked token (delete token.json and retry)
         Communicator.show_message(f"Errore durante la creazione delle bozze: {e}")
+    finally:
+        db.close()
