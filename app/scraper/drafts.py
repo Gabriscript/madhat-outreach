@@ -25,6 +25,10 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.compose",  # create the drafts
     "https://www.googleapis.com/auth/gmail.metadata",  # read To/Subject of drafts and sent mail, never the body
 ]
+# Gmail caps requests per minute per user: on "rate limit exceeded" the client library waits
+# (2, 4, 8... seconds, randomized) and retries, up to this many times
+RETRIES = 8
+SCAN_LIMIT = 3000  # first-use import: newest drafts and sent mails checked, ~40 outreach mails a day fit easily
 
 TEMPLATES = {
     "promemoria": (
@@ -118,11 +122,14 @@ def gmail_history(service):
     # switch to batch requests if that wait becomes a problem
     for label in ("DRAFT", "SENT"):
         request = messages.list(userId="me", labelIds=[label], maxResults=500)
-        while request is not None:
-            response = request.execute()
+        start = checked
+        # ponytail: newest SCAN_LIMIT per label only (Gmail lists newest first), older outreach isn't seen
+        while request is not None and checked - start < SCAN_LIMIT:
+            response = request.execute(num_retries=RETRIES)
             for item in response.get("messages", []):
                 message = messages.get(
-                    userId="me", id=item["id"], format="metadata", metadataHeaders=["To", "Subject"]).execute()
+                    userId="me", id=item["id"], format="metadata", metadataHeaders=["To", "Subject"]
+                ).execute(num_retries=RETRIES)
                 headers = {h["name"].lower(): h["value"] for h in message.get("payload", {}).get("headers", [])}
                 kind = next((k for prefix, k in prefixes.items() if headers.get("subject", "").startswith(prefix)), None)
                 if kind:  # every recipient counts: creaBozze.py could put several in To
@@ -175,7 +182,8 @@ def create_drafts(kind, path):
                 message["Subject"] = subject.format(name=name or "Spettabile Attività")
                 raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
                 try:
-                    service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute()
+                    service.users().drafts().create(userId="me", body={"message": {"raw": raw}}).execute(
+                        num_retries=RETRIES)
                 except HttpError as e:
                     Communicator.show_message(f"Bozza non creata per {email}: {e}")
                     continue

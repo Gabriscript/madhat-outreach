@@ -87,12 +87,12 @@ class FakeGmail:
 
     def create(self, userId, body):
         self.created.append(body)
-        return SimpleNamespace(execute=dict)
+        return SimpleNamespace(execute=lambda **retry: {})
 
     def list(self, userId, labelIds, maxResults):
         self.listed += 1
         ids = [f"{labelIds[0]}:{i}" for i in range(len(self.existing.get(labelIds[0], [])))]
-        return SimpleNamespace(execute=lambda: {"messages": [{"id": i} for i in ids]})
+        return SimpleNamespace(execute=lambda **retry: {"messages": [{"id": i} for i in ids]})
 
     def list_next(self, request, response):
         return None
@@ -101,7 +101,7 @@ class FakeGmail:
         label, index = id.split(":")
         to, subject = self.existing[label][int(index)]
         headers = [{"name": "To", "value": to}, {"name": "Subject", "value": subject}]
-        return SimpleNamespace(execute=lambda: {"payload": {"headers": headers}})
+        return SimpleNamespace(execute=lambda **retry: {"payload": {"headers": headers}})
 
 
 def test_drafts_never_duplicated():
