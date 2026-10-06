@@ -1,0 +1,263 @@
+"""
+This module contain the code for frontend
+"""
+
+import threading
+import time
+import tkinter as tk
+from tkinter import filedialog, ttk
+
+from scraper.common import Common
+from scraper.communicator import Communicator
+from scraper.drafts import create_drafts
+from scraper.scraper import Backend
+from settings import OUTPUT_PATH
+
+# Teal palette from the design system, primary darkened to #0F766E so white text keeps 5.4:1 contrast
+BG = "#F0FDFA"
+CARD = "#FFFFFF"
+BORDER = "#C7E3DF"
+TEXT = "#134E4A"
+MUTED = "#3F5E5A"
+PRIMARY = "#0F766E"
+PRIMARY_HOVER = "#115E59"
+ERROR = "#B91C1C"
+FONT = "Segoe UI"
+
+
+class Frontend:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.iconphoto(True, tk.PhotoImage(file="app/images/GMS.png"))
+        self.root.title("MadHat Outreach")
+        self.root.configure(bg=BG)
+        self.root.geometry("720x860")
+        self.root.minsize(640, 760)
+        self.init_styles()
+
+        page = ttk.Frame(self.root, padding=24)
+        page.pack(fill="both", expand=True)
+
+        ttk.Label(page, text="MadHat Outreach", style="Title.TLabel").pack(anchor="w")
+        ttk.Label(
+            page, style="Muted.TLabel",
+            text="Trova attività su Google Maps, estrai le loro email e prepara le bozze Gmail.",
+        ).pack(anchor="w", pady=(2, 16))
+
+        """Step 1: scraping"""
+        search = self.card(page, "1   Cerca su Google Maps")
+        ttk.Label(search, text="Cosa cerchi", style="Card.TLabel").pack(anchor="w")
+        self.search_box = ttk.Entry(search, font=(FONT, 12))
+        self.search_box.pack(fill="x", pady=(4, 2), ipady=4)
+        self.search_box.bind("<Return>", lambda _: self.getinput())
+        self.search_error = ttk.Label(search, style="CardMuted.TLabel", text='Categoria e città, es. "dentisti roma"')
+        self.search_error.pack(anchor="w")
+
+        options = ttk.Frame(search, style="Card.TFrame")
+        options.pack(fill="x", pady=(12, 0))
+        ttk.Label(options, text="Formato file", style="Card.TLabel").pack(side="left")
+        self.outputFormatButton = ttk.Combobox(options, values=["Excel", "CSV", "JSON"], state="readonly", width=8)
+        self.outputFormatButton.current(0)
+        self.outputFormatButton.pack(side="left", padx=(8, 24))
+        self.healdessCheckBoxVar = tk.IntVar()
+        ttk.Checkbutton(
+            options, text="Browser nascosto", variable=self.healdessCheckBoxVar, style="Card.TCheckbutton",
+        ).pack(side="left")
+
+        actions = ttk.Frame(search, style="Card.TFrame")
+        actions.pack(fill="x", pady=(16, 0))
+        self.submit_button = ttk.Button(
+            actions, text="Avvia ricerca", style="Primary.TButton", cursor="hand2", command=self.getinput)
+        self.submit_button.pack(side="left")
+        self.stop_button = ttk.Button(
+            actions, text="Ferma", style="Secondary.TButton", cursor="hand2", command=self.stopscraping,
+            state="disabled")
+        self.stop_button.pack(side="left", padx=8)
+        self.progress_label = ttk.Label(actions, style="Card.TLabel")
+        self.progress_label.pack(side="right", padx=(8, 0))
+        self.progress = ttk.Progressbar(actions, mode="indeterminate", style="Teal.Horizontal.TProgressbar")
+
+        """Step 2: Gmail drafts, each button asks for a scraped file"""
+        drafts = self.card(page, "2   Prepara le bozze Gmail")
+        ttk.Label(
+            drafts, style="CardMuted.TLabel", wraplength=560, justify="left",
+            text="Scegli un file di risultati: verrà salvata una bozza per ogni attività con email. "
+                 "Nulla viene inviato, controlli tu le bozze in Gmail.",
+        ).pack(anchor="w")
+        buttons = ttk.Frame(drafts, style="Card.TFrame")
+        buttons.pack(fill="x", pady=(12, 0))
+        self.draft_buttons = []
+        for text, kind in (("Bozze Promemoria", "promemoria"), ("Bozze Sito web", "sito")):
+            button = ttk.Button(
+                buttons, text=text, style="Secondary.TButton", cursor="hand2",
+                command=lambda kind=kind: self.startdrafts(kind),
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.draft_buttons.append(button)
+
+        """Activity log"""
+        ttk.Label(page, text="Attività", style="Heading.TLabel").pack(anchor="w", pady=(8, 4))
+        log = tk.Frame(page, bg=CARD, highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
+        log.pack(fill="both", expand=True)
+        self.show_text = tk.Text(
+            log, font=(FONT, 10), height=8, wrap="word", state="disabled", relief="flat",
+            bg=CARD, fg=TEXT, padx=12, pady=8,
+        )
+        scrollbar = ttk.Scrollbar(log, command=self.show_text.yview)
+        self.show_text.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        self.show_text.pack(side="left", fill="both", expand=True)
+
+        self.__replacingtext("Pronto. Scrivi cosa cercare e premi Avvia ricerca.")
+        self.search_box.focus_set()
+        self.init_communicator()
+
+    def init_styles(self):
+        style = ttk.Style(self.root)
+        style.theme_use("clam")  # the only built-in theme that honours custom colours on Windows
+        style.configure(".", font=(FONT, 10), background=BG, foreground=TEXT)
+        style.configure("TFrame", background=BG)
+        style.configure("Card.TFrame", background=CARD)
+        style.configure("Title.TLabel", font=(FONT, 20, "bold"))
+        style.configure("Heading.TLabel", font=(FONT, 11, "bold"))
+        style.configure("Muted.TLabel", foreground=MUTED)
+        style.configure("Card.TLabel", background=CARD)
+        style.configure("CardHeading.TLabel", background=CARD, font=(FONT, 12, "bold"))
+        style.configure("CardMuted.TLabel", background=CARD, foreground=MUTED, font=(FONT, 9))
+        style.configure("CardError.TLabel", background=CARD, foreground=ERROR, font=(FONT, 9))
+        style.configure("Card.TCheckbutton", background=CARD)
+        style.map("Card.TCheckbutton", background=[("active", CARD)])
+        style.configure("TEntry", fieldbackground=CARD, bordercolor=BORDER, lightcolor=BORDER, padding=6)
+        style.map("TEntry", bordercolor=[("focus", PRIMARY)], lightcolor=[("focus", PRIMARY)])
+        style.configure(
+            "TCombobox", fieldbackground=CARD, background=CARD, bordercolor=BORDER, lightcolor=BORDER,
+            darkcolor=BORDER, arrowcolor=PRIMARY, arrowsize=14, padding=4)
+        style.map("TCombobox", fieldbackground=[("readonly", CARD)], background=[("active", BG)],
+                  bordercolor=[("focus", PRIMARY)])
+        style.configure(
+            "Vertical.TScrollbar", background=BG, troughcolor=CARD, bordercolor=CARD, lightcolor=BG,
+            darkcolor=BG, arrowcolor=MUTED, gripcount=0)
+        style.map("Vertical.TScrollbar", background=[("active", BORDER)])
+
+        button = {"font": (FONT, 10, "bold"), "padding": (16, 8), "borderwidth": 1, "focuscolor": TEXT}
+        style.configure("Primary.TButton", background=PRIMARY, foreground="white", bordercolor=PRIMARY, **button)
+        style.map(
+            "Primary.TButton",
+            background=[("disabled", BORDER), ("active", PRIMARY_HOVER)],
+            foreground=[("disabled", MUTED)],
+        )
+        style.configure("Secondary.TButton", background=CARD, foreground=PRIMARY, bordercolor=PRIMARY, **button)
+        style.map(
+            "Secondary.TButton",
+            background=[("disabled", CARD), ("active", BG)],
+            foreground=[("disabled", BORDER)],
+            bordercolor=[("disabled", BORDER)],
+        )
+        style.configure("Teal.Horizontal.TProgressbar", background=PRIMARY, troughcolor=BG, bordercolor=BORDER)
+
+    def card(self, parent, title):
+        """White bordered section, returns the inner frame to fill"""
+        outer = tk.Frame(parent, bg=CARD, highlightthickness=1, highlightbackground=BORDER, highlightcolor=BORDER)
+        outer.pack(fill="x", pady=(0, 16))
+        inner = ttk.Frame(outer, style="Card.TFrame", padding=16)
+        inner.pack(fill="x")
+        ttk.Label(inner, text=title, style="CardHeading.TLabel").pack(anchor="w", pady=(0, 12))
+        return inner
+
+    def init_communicator(self):
+        Communicator.set_frontend_object(self)
+
+    def __replacingtext(self, text):
+        """Append a timestamped line to the activity log"""
+
+        self.show_text.config(state="normal")
+        self.show_text.insert(tk.END, f"{time.strftime('%H:%M')}   {text}\n")
+        self.show_text.see(tk.END)
+        self.show_text.config(state="disabled")
+
+    def getinput(self):
+        if str(self.submit_button["state"]) == "disabled":
+            return  # Enter pressed while a search is already running
+        self.searchQuery = self.search_box.get().strip()
+        if not self.searchQuery:
+            self.search_error.config(text="Scrivi cosa cercare, es. \"dentisti roma\"", style="CardError.TLabel")
+            self.search_box.focus_set()
+            return
+        self.search_error.config(text='Categoria e città, es. "dentisti roma"', style="CardMuted.TLabel")
+
+        self.searchQuery = self.searchQuery.lower()
+        self.outputFormatValue = self.outputFormatButton.get().lower()
+        self.headlessMode = self.healdessCheckBoxVar.get()
+
+        Common.closeThread.clear()  # a previous Stop must not end this search right away
+        self.submit_button.config(state="disabled")
+        self.stop_button.config(state="normal")
+        self.progress.pack(side="left", fill="x", expand=True, padx=(16, 0))
+        self.progress.start(12)
+
+        # not a daemon: on window close it must live long enough to quit Chrome
+        self.threadToStartBackend = threading.Thread(target=self.startscraping)
+        self.threadToStartBackend.start()
+
+    def stopscraping(self):
+        Common.set_close_thread()
+        self.stop_button.config(state="disabled")
+        self.__replacingtext("Interrompo la ricerca, salvo quello che ho già raccolto...")
+
+    def closingbrowser(self):
+        """It will close the browser when the app is closed"""
+
+        Common.set_close_thread()
+        self.root.destroy()
+
+    def startscraping(self):
+        try:
+            backend = Backend(self.searchQuery, self.outputFormatValue, healdessmode=self.headlessMode)
+        except Exception as e:  # Chrome missing, driver download failed... mainscraping never runs
+            self.__replacingtext(f"Impossibile avviare Chrome: {e}")
+            self.end_processing()
+            return
+        backend.mainscraping()
+
+    def startdrafts(self, kind):
+        """Pick a scraped file, then build its Gmail drafts off the Tk thread"""
+        path = filedialog.askopenfilename(
+            initialdir=OUTPUT_PATH, filetypes=[("Risultati della ricerca", "*.xlsx *.csv *.json")])
+        if not path:
+            return
+        for button in self.draft_buttons:  # no second run until this one is finished
+            button.config(state="disabled")
+
+        def run():
+            try:
+                create_drafts(kind, path)
+            finally:
+                for button in self.draft_buttons:
+                    button.config(state="normal")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def progressshowing(self, done, total):
+        """Scrolling phase: bar bounces. Reading phase: bar fills, one step per business"""
+        if str(self.progress["mode"]) != "determinate":
+            self.progress.stop()
+            self.progress.config(mode="determinate", maximum=total)
+        self.progress["value"] = done
+        self.progress_label.config(text=f"Scheda {done} di {total}")
+
+    def end_processing(self):
+        self.progress.stop()
+        self.progress.config(mode="indeterminate", value=0)
+        self.progress.pack_forget()
+        self.progress_label.config(text="")
+        self.submit_button.config(state="normal")
+        self.stop_button.config(state="disabled")
+
+    def messageshowing(self, message):
+        self.__replacingtext(message)
+
+
+if __name__ == "__main__":
+    app = Frontend()
+    app.root.protocol("WM_DELETE_WINDOW", app.closingbrowser)
+    app.root.mainloop()
