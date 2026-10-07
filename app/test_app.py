@@ -158,6 +158,10 @@ class FakeGmail:
     def messages(self):
         return self
 
+    def labels(self):
+        labels = [{"id": "Label_7", "name": "Rimbalzi"}, {"id": "Label_8", "name": "Fatture"}]
+        return SimpleNamespace(list=lambda userId: SimpleNamespace(execute=lambda **retry: {"labels": labels}))
+
     def create(self, userId, body):
         self.created.append(body)
         thread = f"new-{len(self.created)}"
