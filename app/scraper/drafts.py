@@ -32,6 +32,7 @@ SCAN_LIMIT = 3000  # first-use import: newest drafts and sent mails checked, ~40
 # Subjects of the outreach sent before this app, found in Sent: they count as that campaign when importing
 OLD_SUBJECTS = {"Un restyling per il sito": "sito", "Il vostro sito": "sito", "Proposta sito web": "sito"}
 INBOX_SCAN = 2000
+BOUNCE_LABEL = "Rimbalzi"  # Gmail label a filter may move mailer-daemon bounces into
 INTERACTIVE = True  # False in the scheduled runs (automatico.py): no browser login possible  # newest inbox messages checked for replies at every run (list only, cheap)
 
 TEMPLATES = {
@@ -148,18 +149,21 @@ def scan_replies(service, db):
     automatically. Matching threads needs no message bodies and only list calls."""
     ours = dict(db.execute("SELECT thread, email FROM events WHERE thread IS NOT NULL AND kind IN ('promemoria', 'sito')"))
     known = {email for (email,) in db.execute("SELECT email FROM events WHERE kind = 'risposta'")}
-    request = service.users().messages().list(userId="me", labelIds=["INBOX"], maxResults=500)
-    seen = 0
-    while request is not None and seen < INBOX_SCAN:
-        response = request.execute(num_retries=RETRIES)
-        for item in response.get("messages", []):
-            email = ours.get(item["threadId"])
-            if email and email not in known:
-                leads.record(db, email, "risposta", thread=item["threadId"])
-                known.add(email)
-                Communicator.show_message(f"Nuova risposta da {email}: non riceverà altre email automatiche")
-        seen += len(response.get("messages", []))
-        request = service.users().messages().list_next(request, response)
+    # bounces may be filtered out of the inbox into a "Rimbalzi" label: read that too
+    labels = service.users().labels().list(userId="me").execute(num_retries=RETRIES).get("labels", [])
+    for label in ["INBOX"] + [label["id"] for label in labels if label["name"] == BOUNCE_LABEL]:
+        request = service.users().messages().list(userId="me", labelIds=[label], maxResults=500)
+        seen = 0
+        while request is not None and seen < INBOX_SCAN:
+            response = request.execute(num_retries=RETRIES)
+            for item in response.get("messages", []):
+                email = ours.get(item["threadId"])
+                if email and email not in known:
+                    leads.record(db, email, "risposta", thread=item["threadId"])
+                    known.add(email)
+                    Communicator.show_message(f"Nuova risposta da {email}: non riceverà altre email automatiche")
+            seen += len(response.get("messages", []))
+            request = service.users().messages().list_next(request, response)
 
 
 def prepare(service, db):

@@ -240,7 +240,7 @@ def test_send_only_our_drafts_from_before_today():
         leads.record(db, "d@x.it", "sito", leads.now(), "oggi")  # prepared today: tomorrow
         leads.record(db, "e@x.it", "sito", days_ago(30), "risposto")  # they answered overnight: your draft there
         db.close()                                                     # is a reply in progress, never sent
-        gmail = FakeGmail(existing={"INBOX": [{"thread": "risposto"}], "DRAFTS": [
+        gmail = FakeGmail(existing={"Label_7": [{"thread": "risposto"}], "DRAFTS": [  # bounce filtered to Rimbalzi
             {"id": f"draft-{thread}", "thread": thread} for thread in ("oggi", "ieri", "risposto", "vecchia", "personale")]})
         automatico.gmail_service = lambda: gmail
         automatico.send()
