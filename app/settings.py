@@ -18,7 +18,7 @@ DB_PATH = OUTPUT_PATH + "outreach.db"
 LISTS_PATH = "liste/"  # cities and categories the routine searches, one per line, edit them freely
 
 # Daily routine
-DAILY_DRAFTS = 40  # drafts prepared per day
+DAILY_DRAFTS = 120  # drafts prepared per day; they may pile up, the Apps Script trigger sends them
 SEARCHES_PER_DAY = 4  # Google Maps searches per day at most: few and spaced out, like a person
 STOCK_DAYS = 10  # search only when fewer days of leads than this are ready; raise it to collect ahead
 SECOND_PITCH_DAYS = 120  # the other campaign only this long after the first email, never after a reply

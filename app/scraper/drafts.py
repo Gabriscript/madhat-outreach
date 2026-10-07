@@ -203,13 +203,11 @@ def waiting_drafts(service, db):
 
 
 def draft_today(service, db):
-    """Keeps one day of drafts (DAILY_DRAFTS) waiting to be sent: none while older ones are still queued"""
+    """Up to DAILY_DRAFTS new drafts a day, however many runs and however many still wait to be sent"""
     prepare(service, db)
-    waiting = len(waiting_drafts(service, db))
-    todo = leads.pick(db, max(DAILY_DRAFTS - waiting, 0))
+    todo = leads.pick(db, max(DAILY_DRAFTS - leads.drafted_today(db), 0))
     if not todo:
-        Communicator.show_message(f"{waiting} bozze già in attesa di invio: oggi non ne preparo altre"
-                                  if waiting else "Nessuna bozza da preparare oggi")
+        Communicator.show_message("Nessuna bozza da preparare oggi")
         return
     Communicator.show_message(f"Preparo {len(todo)} bozze in Gmail...")
     created = 0

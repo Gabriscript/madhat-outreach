@@ -47,6 +47,9 @@ if __name__ == "__main__":
         messageshowing=log, progressshowing=lambda done, total: None, end_processing=lambda: None,
         outputFormatValue="excel"))
     try:
-        {"prepara": run_routine, "invia": send}[sys.argv[1]]()
+        # sending is done by the Google Apps Script trigger (runs with the PC off); uncomment to send from here
+        {"prepara": run_routine,
+         # "invia": send,
+         }[sys.argv[1]]()
     except Exception as e:
         log(f"Errore ({sys.argv[1:]}): {e}")
